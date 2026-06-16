@@ -239,3 +239,4 @@ clientes ───── ventas ──── detalle_ventas ── productos
 - [ ] URL funcional del sistema desplegado
 - [ ] Bitácora de avances (Scrum board / Trello)
 - [ ] Presentación: problemática → arquitectura propuesta → decisiones técnicas → demo
+
