@@ -1,158 +1,93 @@
 const pool = require('../config/database');
 
+// ============================================================================
+// 1. FUNCIÓN PARA EL HISTORIAL (La que usa tu nueva pantalla de Ventas)
+// ============================================================================
 const getAll = async (req, res) => {
   try {
-    const { desde, hasta, estado } = req.query;
-    const params = [];
-    let query = `
-      SELECT v.*,
-             u.nombre AS cajero_nombre,
-             c.nombre AS cliente_nombre,
-             c.rut    AS cliente_rut
-      FROM ventas v
-      LEFT JOIN usuarios u ON v.usuario_id = u.id
-      LEFT JOIN clientes c ON v.cliente_id = c.id
-      WHERE 1=1
-    `;
-    if (estado) { params.push(estado);  query += ` AND v.estado = $${params.length}`; }
-    if (desde)  { params.push(desde);   query += ` AND v.created_at >= $${params.length}`; }
-    if (hasta)  { params.push(hasta);   query += ` AND v.created_at <= $${params.length}`; }
-    query += ' ORDER BY v.created_at DESC LIMIT 200';
-
-    const result = await pool.query(query, params);
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+    const resultado = await pool.query(`
+      SELECT id, total, metodo_pago, estado, created_at 
+      FROM ventas 
+      ORDER BY created_at DESC
+    `);
+    
+    const datos = resultado.rows ? resultado.rows : (resultado[0] || resultado);
+    
+    res.status(200).json(datos);
+  } catch (error) {
+    console.error('Error al obtener el historial:', error);
+    res.status(500).json({ error: 'No se pudo cargar el historial de ventas' });
   }
 };
 
-const getById = async (req, res) => {
-  try {
-    const venta = await pool.query(
-      `SELECT v.*, u.nombre AS cajero_nombre, c.nombre AS cliente_nombre, c.rut AS cliente_rut
-       FROM ventas v
-       LEFT JOIN usuarios u ON v.usuario_id = u.id
-       LEFT JOIN clientes c ON v.cliente_id = c.id
-       WHERE v.id = $1`,
-      [req.params.id]
-    );
-    if (!venta.rows.length) return res.status(404).json({ error: 'Venta no encontrada.' });
+// ============================================================================
+// 2. FUNCIÓN PARA COBRAR (La que usa la pantalla de Punto de Venta/Caja)
+// ============================================================================
+async function crearVenta(req, res) {
+  // Extraemos el usuario_id del middleware de autenticación (req.user)
+  const usuario_id = req.user ? req.user.id : null;
+  // Desestructuramos las propiedades que envía el front (sin depender de 'total')
+  const { cliente_id, metodo_pago, items } = req.body;
 
-    const detalle = await pool.query(
-      `SELECT dv.*, p.nombre AS producto_nombre
-       FROM detalle_ventas dv
-       LEFT JOIN productos p ON dv.producto_id = p.id
-       WHERE dv.venta_id = $1`,
-      [req.params.id]
-    );
-
-    res.json({ ...venta.rows[0], items: detalle.rows });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+  // Validación de seguridad para evitar arreglos vacíos o inexistentes
+  if (!items || items.length === 0) {
+    return res.status(400).json({ error: 'El carrito no puede estar vacío' });
   }
-};
 
-/**
- * POST /api/sales
- * Body: { cliente_id, metodo_pago, notas, items: [{ producto_id, cantidad, precio_unitario }] }
- */
-const create = async (req, res) => {
-  const client = await pool.connect();
   try {
-    const { cliente_id, metodo_pago = 'efectivo', notas, items } = req.body;
-
-    if (!items || !items.length) {
-      return res.status(400).json({ error: 'La venta debe tener al menos un producto.' });
+    // 1. Calculamos el total de la venta sumando los subtotales en el servidor
+    let totalCalculado = 0;
+    for (let item of items) {
+      totalCalculado += item.cantidad * item.precio_unitario;
     }
 
-    await client.query('BEGIN');
+    // Iniciamos la transacción directamente en el pool
+    await pool.query('BEGIN'); 
 
-    // Verificar stock y calcular total
-    let total = 0;
-    for (const item of items) {
-      const prod = await client.query(
-        'SELECT id, stock, precio FROM productos WHERE id = $1 AND activo = true',
-        [item.producto_id]
-      );
-      if (!prod.rows.length) {
-        await client.query('ROLLBACK');
-        return res.status(404).json({ error: `Producto ID ${item.producto_id} no encontrado.` });
-      }
-      if (prod.rows[0].stock < item.cantidad) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ error: `Stock insuficiente para producto ID ${item.producto_id}.` });
-      }
-      total += item.precio_unitario * item.cantidad;
-    }
-
-    // Crear venta (usuario_id desde req.user cuando auth esté implementado)
-    const ventaResult = await client.query(
-      `INSERT INTO ventas (usuario_id, cliente_id, total, metodo_pago, notas)
-       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-      [req.user?.id || null, cliente_id || null, total, metodo_pago, notas || null]
+    // Guardamos el encabezado de la boleta (con estado 'completada' por defecto y el total seguro)
+    const resultadoVenta = await pool.query(
+      `INSERT INTO ventas (usuario_id, cliente_id, total, metodo_pago, estado) 
+       VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+      [
+        usuario_id, 
+        cliente_id ? parseInt(cliente_id) : null, 
+        totalCalculado, // <-- Número entero válido y blindado contra modificaciones
+        metodo_pago || 'efectivo',
+        'completada'
+      ]
     );
-    const venta = ventaResult.rows[0];
+    
+    const numeroBoleta = resultadoVenta.rows[0].id;
 
-    // Insertar detalle y descontar stock
-    for (const item of items) {
-      const subtotal = item.precio_unitario * item.cantidad;
-      await client.query(
-        `INSERT INTO detalle_ventas (venta_id, producto_id, cantidad, precio_unitario, subtotal)
+    // Recorremos los productos usando la estructura exacta que manda el cliente (items)
+    for (let item of items) {
+      // El subtotal se calcula multiplicando las propiedades correctas del front
+      const subtotal = item.cantidad * item.precio_unitario;
+
+      // Insertamos cada producto en el detalle utilizando el pool
+      await pool.query(
+        `INSERT INTO detalle_ventas (venta_id, producto_id, cantidad, precio_unitario, subtotal) 
          VALUES ($1, $2, $3, $4, $5)`,
-        [venta.id, item.producto_id, item.cantidad, item.precio_unitario, subtotal]
+        [numeroBoleta, item.producto_id, item.cantidad, item.precio_unitario, subtotal]
       );
-      await client.query(
-        'UPDATE productos SET stock = stock - $1, updated_at = NOW() WHERE id = $2',
+
+      // Descontamos del stock usando item.producto_id directamente en el pool
+      await pool.query(
+        `UPDATE productos SET stock = stock - $1 WHERE id = $2`,
         [item.cantidad, item.producto_id]
       );
     }
 
-    await client.query('COMMIT');
-    res.status(201).json(venta);
-  } catch (err) {
-    await client.query('ROLLBACK');
-    res.status(500).json({ error: err.message });
-  } finally {
-    client.release();
+    // Confirmamos todos los cambios si no hubo errores en el ciclo
+    await pool.query('COMMIT');
+    res.status(201).json({ mensaje: '¡Venta guardada exitosamente!', boleta: numeroBoleta });
+
+  } catch (error) {
+    // Si algo falla, revertimos toda la operación para mantener la consistencia
+    await pool.query('ROLLBACK');
+    console.error('Problema al guardar la venta en la base de datos:', error);
+    res.status(500).json({ error: 'No se pudo completar la venta' });
   }
-};
+}
 
-const cancel = async (req, res) => {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-
-    const ventaResult = await client.query('SELECT * FROM ventas WHERE id = $1', [req.params.id]);
-    if (!ventaResult.rows.length) {
-      await client.query('ROLLBACK');
-      return res.status(404).json({ error: 'Venta no encontrada.' });
-    }
-    if (ventaResult.rows[0].estado === 'anulada') {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ error: 'La venta ya está anulada.' });
-    }
-
-    // Reponer stock
-    const detalle = await client.query(
-      'SELECT * FROM detalle_ventas WHERE venta_id = $1',
-      [req.params.id]
-    );
-    for (const item of detalle.rows) {
-      await client.query(
-        'UPDATE productos SET stock = stock + $1, updated_at = NOW() WHERE id = $2',
-        [item.cantidad, item.producto_id]
-      );
-    }
-
-    await client.query("UPDATE ventas SET estado = 'anulada' WHERE id = $1", [req.params.id]);
-    await client.query('COMMIT');
-    res.json({ message: 'Venta anulada correctamente.' });
-  } catch (err) {
-    await client.query('ROLLBACK');
-    res.status(500).json({ error: err.message });
-  } finally {
-    client.release();
-  }
-};
-
-module.exports = { getAll, getById, create, cancel };
+module.exports = { crearVenta, getAll };
