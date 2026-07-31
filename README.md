@@ -1,9 +1,8 @@
-> **Proyecto Académico:** Módulo Cloud Computing (4° año Ingeniería)
-> **Mi Rol & Contribución:** Despliegue/Contenerización con Docker, configuración de entorno y desarrollo en equipo.
-> 
 # Sistema POS — Evaluación de Módulo Cloud Computing
 
 > **Instituto Profesional Virginia Gómez — 4° año Ingeniería (E) en Computación e Informática**
+> **Proyecto Académico:** Módulo Cloud Computing (4° año Ingeniería)
+> **Mi Rol & Contribución:** Despliegue/Contenerización con Docker, configuración de entorno y desarrollo en equipo.
 > Prof. Patricio Balboa
 
 Sistema de Punto de Venta (POS) base para pymes chilenas. Esta aplicación es el **punto de partida monolítico** que cada equipo debe migrar a una arquitectura cloud moderna, resiliente y de alta disponibilidad.
