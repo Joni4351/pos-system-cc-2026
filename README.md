@@ -1,6 +1,7 @@
 # Sistema POS — Evaluación de Módulo Cloud Computing
 
 > **Instituto Profesional Virginia Gómez — 4° año Ingeniería (E) en Computación e Informática**
+> **
 > **Proyecto Académico:** Módulo Cloud Computing (4° año Ingeniería)
 > **Mi Rol & Contribución:** Despliegue/Contenerización con Docker, configuración de entorno y desarrollo en equipo.
 > Prof. Patricio Balboa
